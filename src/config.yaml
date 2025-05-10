@@ -5,6 +5,7 @@ model:
   type: wav2vec2
   pretrained: facebook/wav2vec2-base-960h
   trainable: false
+  use_weighted_sum: true
 
 transformer:
   feature_dim: 768
@@ -13,7 +14,7 @@ transformer:
   nhead: 4
   dim_feedforward: 512
   pool: cls
-  dropout: 0.2
+  dropout: 0.5
 
 optimizer:
   lr: 5e-5

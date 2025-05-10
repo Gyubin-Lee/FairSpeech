@@ -96,7 +96,8 @@ def train(cfg):
     fe = FeatureExtractor(
         model_type=cfg['model']['type'],
         pretrained_model_name_or_path=cfg['model']['pretrained'],
-        trainable=cfg['model']['trainable']
+        trainable=cfg['model']['trainable'],
+        use_weighted_sum=cfg['model'].get('use_weighted_sum', False)
     ).to(device)
     feature_dim = fe.model.config.hidden_size
 
@@ -131,6 +132,13 @@ def train(cfg):
         weight_decay=float(cfg['optimizer']['weight_decay'])
     )
 
+    # cosine annealing scheduler
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=cfg['training']['epochs'],
+        eta_min=0.0
+    )
+
     best_val_acc = 0.0
 
     # training loop
@@ -142,14 +150,19 @@ def train(cfg):
         running_corr = 0
         running_count = 0
 
+        # print current learning rate
+        current_lr = scheduler.get_last_lr()[0]
+        print(f"[Epoch {epoch:02d}] LR: {current_lr:.2e}")
+
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{cfg['training']['epochs']} [TRAIN]")
         for wave, emos, gens in pbar:
             wave, emos, gens = wave.to(device), emos.to(device), gens.to(device)
 
             optimizer.zero_grad()
-            with torch.set_grad_enabled(cfg['model']['trainable']):
-                hidden_states = fe(wave)
-            feats = hidden_states[-1]
+            out = fe(wave)
+            # if weighted_sum: out is Tensor; else out is tuple(hidden_states)
+            feats = out if isinstance(out, torch.Tensor) else out[-1]
+        
             emo_logits, gen_logits = clf(feats, lambda_grl=cfg['training']['lambda_grl'])
 
             loss_emo = criterion_emo(emo_logits, emos)
@@ -182,8 +195,8 @@ def train(cfg):
         with torch.no_grad():
             for wave, emos, _ in pbar_val:
                 wave, emos = wave.to(device), emos.to(device)
-                hidden_states = fe(wave)
-                feats = hidden_states[-1]
+                out = fe(wave)
+                feats = out if isinstance(out, torch.Tensor) else out[-1]
                 emo_logits, _ = clf(feats, lambda_grl=0.0)
 
                 l = criterion_emo(emo_logits, emos)
@@ -200,6 +213,12 @@ def train(cfg):
         val_loss = val_loss / val_count
         val_acc = val_corr / val_count
 
+        # print layer weights if using weighted sum
+        if cfg['model'].get('use_weighted_sum', False):
+            # fe.layer_weights 는 (num_layers,) shape 의 nn.Parameter
+            weights = fe.layer_weights.detach().cpu().numpy()
+            print(f"[Epoch {epoch:02d}] layer weights α_i: {weights}")
+
         # log metrics
         with open(metrics_path, "a") as mf:
             mf.write(f"{epoch},{train_loss:.4f},{train_acc:.4f},{val_loss:.4f},{val_acc:.4f}\n")
@@ -209,6 +228,8 @@ def train(cfg):
             best_val_acc = val_acc
             torch.save(fe.state_dict(), out_dir / "best_fe.pt")
             torch.save(clf.state_dict(), out_dir / "best_clf.pt")
+        
+        scheduler.step()
 
     print(f"\nTraining complete. Best Val Acc: {best_val_acc:.4f}")
     
