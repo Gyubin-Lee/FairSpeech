@@ -1,246 +1,272 @@
+#!/usr/bin/env python3
 import os
 import yaml
 import argparse
+import json
 from pathlib import Path
 from datetime import datetime
+from collections import Counter
 
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+from sklearn.metrics import recall_score
 
 from data.RAVDESS_dataset import RAVDESSDataset
 from models.feature_extractor import FeatureExtractor
 from models.transformer_encoder import TransformerClassifier
-
-from collections import Counter
+from models.pointwise_conv_classifier import PointwiseConv1DClassifier
 
 def collate_fn(batch, max_seq_len, downsample_factor):
     """
-    Crop & pad raw waveforms so that after feature‐extractor downsampling
-    we have at most `max_seq_len` frames (i.e. max_seq_len*downsample_factor samples).
+    Pads & crops raw waveforms and collects actor_ids in the batch.
     Returns:
-        waveforms: FloatTensor (batch, max_audio_len)
-        emotions : LongTensor (batch,)
-        genders  : LongTensor (batch,)
+        padded: FloatTensor (B, L)
+        emos:   LongTensor (B,)
+        gens:   LongTensor (B,)
+        aids:   LongTensor (B,)
     """
-    waveforms, emos, gens = zip(*batch)
+    waveforms, emos, gens, aids = zip(*batch)
     max_audio = max_seq_len * downsample_factor
-    cropped = []
-    for w in waveforms:
-        if w.shape[0] > max_audio:
-            w = w[:max_audio]
-        cropped.append(w)
-    # pad to longest in batch
+    cropped = [(w[:max_audio] if w.shape[0] > max_audio else w) for w in waveforms]
+
     lengths = [w.shape[0] for w in cropped]
     max_len = max(lengths)
-    batch_size = len(cropped)
-    padded = torch.zeros(batch_size, max_len)
+    B = len(cropped)
+
+    padded = torch.zeros(B, max_len)
     for i, w in enumerate(cropped):
-        padded[i, :w.shape[0]] = w
+        padded[i, : w.shape[0]] = w
+
     emos = torch.tensor(emos, dtype=torch.long)
     gens = torch.tensor(gens, dtype=torch.long)
-    return padded, emos, gens
+    aids = torch.tensor(aids, dtype=torch.long)
+    return padded, emos, gens, aids
+
+def compute_metrics(y_true, y_pred, average='macro'):
+    correct = sum(t == p for t, p in zip(y_true, y_pred))
+    acc = correct / len(y_true) if y_true else 0.0
+    recall = recall_score(y_true, y_pred, average=average) if y_true else 0.0
+    return acc, recall
 
 def train(cfg):
-    # create timestamped output directory
+    # -- prepare output dir
     base_out = Path(cfg['output_dir'])
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_dir = base_out / timestamp
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = base_out / ts
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # dump config for reproducibility
+    # dump config
     with open(out_dir / "used_config.yaml", "w") as f:
         yaml.safe_dump(cfg, f)
 
-    # prepare metrics log
+    # metrics log
     metrics_path = out_dir / "metrics.csv"
     with open(metrics_path, "w") as mf:
-        mf.write("epoch,train_loss,train_acc,val_loss,val_acc\n")
+        mf.write("epoch,train_loss,train_acc,train_recall,val_loss,val_acc,val_recall\n")
 
     device = torch.device(cfg['device'])
 
-    # dataset & dataloader
-    train_ds = RAVDESSDataset(
-        root=cfg['data_root'],
-        split="train",
-        sample_rate=cfg.get('sample_rate', 16000)
-    )
-    val_ds = RAVDESSDataset(
-        root=cfg['data_root'],
-        split="val",
-        sample_rate=cfg.get('sample_rate', 16000)
-    )
-    down_f = 320
+    # -- load speaker stats JSON
+    stats_file = Path(cfg['data_root']) / f"speaker_feature_stats_{cfg['model']['type']}.json"
+    with open(stats_file) as f:
+        raw_stats = json.load(f)
+    spk_means = {int(a): torch.tensor(v['mean'], device=device) for a, v in raw_stats.items()}
+    spk_stds  = {int(a): torch.tensor(v['std'],  device=device) for a, v in raw_stats.items()}
 
+    # -- datasets & loaders
+    train_ds = RAVDESSDataset(root=cfg['data_root'], split="train", sample_rate=cfg.get('sample_rate',16000))
+    val_ds   = RAVDESSDataset(root=cfg['data_root'], split="val",   sample_rate=cfg.get('sample_rate',16000))
+
+    down_f = 320
     train_loader = DataLoader(
-        train_ds,
-        batch_size=cfg['training']['batch_size'],
-        shuffle=True,
+        train_ds, batch_size=cfg['training']['batch_size'], shuffle=True,
         num_workers=cfg['training']['num_workers'],
-        collate_fn=lambda b: collate_fn(
-            b, cfg['training']['max_seq_len'], down_f
-        )
+        collate_fn=lambda b: collate_fn(b, cfg['training']['max_seq_len'], down_f)
     )
     val_loader = DataLoader(
-        val_ds,
-        batch_size=cfg['training']['batch_size'],
-        shuffle=False,
+        val_ds, batch_size=cfg['training']['batch_size'], shuffle=False,
         num_workers=cfg['training']['num_workers'],
-        collate_fn=lambda b: collate_fn(
-            b, cfg['training']['max_seq_len'], down_f
-        )
+        collate_fn=lambda b: collate_fn(b, cfg['training']['max_seq_len'], down_f)
     )
 
-    # feature extractor
+    # -- feature extractor
     fe = FeatureExtractor(
         model_type=cfg['model']['type'],
         pretrained_model_name_or_path=cfg['model']['pretrained'],
         trainable=cfg['model']['trainable'],
         use_weighted_sum=cfg['model'].get('use_weighted_sum', False)
     ).to(device)
-    feature_dim = fe.model.config.hidden_size
+    fe.eval()  # we won't fine-tune backbone here
+    feat_dim = fe.model.config.hidden_size
 
-    # classifier
-    tconf = cfg['transformer']
-    clf = TransformerClassifier(
-        feature_dim=feature_dim,
-        input_dim=tconf['input_dim'],
-        num_layers=tconf['num_layers'],
-        nhead=tconf['nhead'],
-        dim_feedforward=tconf['dim_feedforward'],
-        num_emotions=cfg['training'].get('num_emotions', 7),
-        num_genders=cfg['training'].get('num_genders', 2),
-        dropout=tconf['dropout'],
-        pool=tconf['pool']
-    ).to(device)
+    # -- classifier selection
+    cls_type = cfg['model'].get('classifier', 'transformer').lower()
+    if cls_type == 'transformer':
+        tconf = cfg['transformer']
+        clf = TransformerClassifier(
+            feature_dim=feat_dim,
+            input_dim=tconf['input_dim'],
+            num_layers=tconf['num_layers'],
+            nhead=tconf['nhead'],
+            dim_feedforward=tconf['dim_feedforward'],
+            num_emotions=cfg['training'].get('num_emotions', 7),
+            num_genders=cfg['training'].get('num_genders', 2),
+            dropout=tconf['dropout'],
+            pool=tconf['pool']
+        )
+    elif cls_type == 'conv1d':
+        conv_h = cfg['model'].get('conv_hidden_dim', 128)
+        conv_d = cfg['model'].get('conv_dropout', 0.2)
+        clf = PointwiseConv1DClassifier(
+            input_dim=feat_dim,
+            hidden_dim=conv_h,
+            num_emotions=cfg['training'].get('num_emotions', 7),
+            dropout=conv_d
+        )
+    else:
+        raise ValueError(f"Unknown classifier: {cls_type}")
+    clf.to(device)
 
-    # Define loss functions
-    emo_counts = Counter([emo for _, emo, _ in train_ds.items])
-    num_emotions = len(emo_counts)
-    emo_weights = torch.tensor(
-        [1.0 / emo_counts[i] for i in range(num_emotions)],
-        device=device
-    )
-    criterion_emo = nn.CrossEntropyLoss(weight=emo_weights)
+    # -- loss functions (speaker-norm targets only emo)
+    emo_counts = Counter([emo for _, emo, _, _ in train_ds.items])
+    weights = torch.tensor([1.0/emo_counts[i] for i in range(len(emo_counts))], device=device)
+    criterion_emo = nn.CrossEntropyLoss(weight=weights)
     criterion_gen = nn.CrossEntropyLoss()
 
-    # optimizer
+    # -- optimizer & scheduler
     optimizer = torch.optim.AdamW(
-        [p for p in fe.parameters() if p.requires_grad] + list(clf.parameters()),
+        list(clf.parameters()),
         lr=float(cfg['optimizer']['lr']),
         weight_decay=float(cfg['optimizer']['weight_decay'])
     )
+    scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
 
-    # cosine annealing scheduler
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=cfg['training']['epochs'],
-        eta_min=0.0
-    )
+    best_val_recall = 0.0
 
-    best_val_acc = 0.0
-
-    # training loop
-    for epoch in range(1, cfg['training']['epochs'] + 1):
-        # train phase
-        fe.train() if cfg['model']['trainable'] else fe.eval()
+    # -- training loop
+    for epoch in range(1, cfg['training']['epochs']+1):
+        # training
         clf.train()
         running_loss = 0.0
-        running_corr = 0
-        running_count = 0
+        train_trues, train_preds = [], []
 
-        # print current learning rate
-        current_lr = scheduler.get_last_lr()[0]
-        print(f"[Epoch {epoch:02d}] LR: {current_lr:.2e}")
-
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{cfg['training']['epochs']} [TRAIN]")
-        for wave, emos, gens in pbar:
-            wave, emos, gens = wave.to(device), emos.to(device), gens.to(device)
-
+        print(f"\nEpoch {epoch}/{cfg['training']['epochs']}  LR: {scheduler.get_last_lr()[0]:.2e}")
+        pbar = tqdm(train_loader, desc="TRAIN")
+        for wave, emos, gens, aids in pbar:
+            wave, emos, gens, aids = wave.to(device), emos.to(device), gens.to(device), aids.to(device)
             optimizer.zero_grad()
-            out = fe(wave)
-            # if weighted_sum: out is Tensor; else out is tuple(hidden_states)
-            feats = out if isinstance(out, torch.Tensor) else out[-1]
-        
-            emo_logits, gen_logits = clf(feats, lambda_grl=cfg['training']['lambda_grl'])
 
+            # feature extraction
+            out = fe(wave)
+            feats = out if isinstance(out, torch.Tensor) else out[-1]  # (B, T, D)
+
+            # optional speaker-wise normalization
+            if cfg['model'].get('speaker_wise_normalization', False):
+                norm_feats = torch.stack([
+                    (feats[i] - spk_means[int(a.item())]) / spk_stds[int(a.item())]
+                    for i, a in enumerate(aids)
+                ], dim=0)
+            else:
+                norm_feats = feats
+
+            # forward
+            if cls_type == 'transformer':
+                emo_logits, gen_logits = clf(norm_feats, lambda_grl=cfg['training']['lambda_grl'])
+            else:
+                emo_logits = clf(norm_feats)
+                gen_logits = None
+
+            # loss
             loss_emo = criterion_emo(emo_logits, emos)
-            loss_gen = criterion_gen(gen_logits, gens)
-            loss = loss_emo + cfg['training']['adv_weight'] * loss_gen
+            if gen_logits is not None:
+                loss_gen = criterion_gen(gen_logits, gens)
+                loss = loss_emo + cfg['training']['adv_weight'] * loss_gen
+            else:
+                loss = loss_emo
+
             loss.backward()
             optimizer.step()
 
+            # stats
             bs = wave.size(0)
             running_loss += loss.item() * bs
             preds = emo_logits.argmax(dim=1)
-            running_corr += (preds == emos).sum().item()
-            running_count += bs
+            train_trues.extend(emos.cpu().tolist())
+            train_preds.extend(preds.cpu().tolist())
 
-            avg_loss = running_loss / running_count
-            avg_acc = running_corr / running_count
+            # inside the TRAIN loop, after updating running_loss, train_trues, train_preds:
+            avg_loss = running_loss / len(train_trues)
+            avg_acc  = sum(t == p for t, p in zip(train_trues, train_preds)) / len(train_trues)
             pbar.set_postfix(train_loss=f"{avg_loss:.4f}", train_acc=f"{avg_acc:.4f}")
 
-        train_loss = running_loss / running_count
-        train_acc = running_corr / running_count
+        train_loss = running_loss / len(train_trues)
+        train_acc, train_recall = compute_metrics(train_trues, train_preds)
 
-        # validation phase
-        fe.eval()
+        # validation
         clf.eval()
+        val_trues, val_preds = [], []
         val_loss = 0.0
-        val_corr = 0
-        val_count = 0
 
-        pbar_val = tqdm(val_loader, desc=f"Epoch {epoch}/{cfg['training']['epochs']} [VAL]  ")
+        pbar = tqdm(val_loader, desc="VAL  ")
         with torch.no_grad():
-            for wave, emos, _ in pbar_val:
-                wave, emos = wave.to(device), emos.to(device)
+            for wave, emos, gens, aids in pbar:
+                wave, emos, aids = wave.to(device), emos.to(device), aids.to(device)
                 out = fe(wave)
                 feats = out if isinstance(out, torch.Tensor) else out[-1]
-                emo_logits, _ = clf(feats, lambda_grl=0.0)
+
+                if cfg['model'].get('speaker_wise_normalization', False):
+                    norm_feats = torch.stack([
+                        (feats[i] - spk_means[int(a.item())]) / spk_stds[int(a.item())]
+                        for i, a in enumerate(aids)
+                    ], dim=0)
+                else:
+                    norm_feats = feats
+                
+                if cls_type == 'transformer':
+                    emo_logits, _ = clf(norm_feats, lambda_grl=0.0)
+                else:
+                    emo_logits = clf(norm_feats)
 
                 l = criterion_emo(emo_logits, emos)
                 bs = wave.size(0)
                 val_loss += l.item() * bs
+
                 preds = emo_logits.argmax(dim=1)
-                val_corr += (preds == emos).sum().item()
-                val_count += bs
+                val_trues.extend(emos.cpu().tolist())
+                val_preds.extend(preds.cpu().tolist())
 
-                avg_vloss = val_loss / val_count
-                avg_vacc = val_corr / val_count
-                pbar_val.set_postfix(val_loss=f"{avg_vloss:.4f}", val_acc=f"{avg_vacc:.4f}")
+                # inside the VAL loop:
+                avg_vloss = val_loss / len(val_trues)
+                avg_vacc  = sum(t == p for t, p in zip(val_trues, val_preds)) / len(val_trues)
+                pbar.set_postfix(val_loss=f"{avg_vloss:.4f}", val_acc=f"{avg_vacc:.4f}")
 
-        val_loss = val_loss / val_count
-        val_acc = val_corr / val_count
+        val_loss = val_loss / len(val_trues)
+        val_acc, val_recall = compute_metrics(val_trues, val_preds)
 
-        # print layer weights if using weighted sum
-        if cfg['model'].get('use_weighted_sum', False):
-            # fe.layer_weights 는 (num_layers,) shape 의 nn.Parameter
-            weights = fe.layer_weights.detach().cpu().numpy()
-            print(f"[Epoch {epoch:02d}] layer weights α_i: {weights}")
+        print(f"\nEpoch {epoch} summary:")
+        print(f"  Train loss: {train_loss:.4f}, Acc: {train_acc:.4f}, Recall: {train_recall:.4f}")
+        print(f"  Val   loss: {val_loss:.4f}, Acc: {val_acc:.4f}, Recall: {val_recall:.4f}")
 
-        # log metrics
+        # log
         with open(metrics_path, "a") as mf:
-            mf.write(f"{epoch},{train_loss:.4f},{train_acc:.4f},{val_loss:.4f},{val_acc:.4f}\n")
+            mf.write(f"{epoch},{train_loss:.4f},{train_acc:.4f},{train_recall:.4f},"
+                     f"{val_loss:.4f},{val_acc:.4f},{val_recall:.4f}\n")
 
         # save best
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            torch.save(fe.state_dict(), out_dir / "best_fe.pt")
-            torch.save(clf.state_dict(), out_dir / "best_clf.pt")
-        
+        if val_recall > best_val_recall:
+            best_val_recall = val_recall
+            torch.save(clf.state_dict(), out_dir/"best_clf.pt")
+
         scheduler.step()
 
-    print(f"\nTraining complete. Best Val Acc: {best_val_acc:.4f}")
-    
+    print(f"\nTraining complete. Best Val Recall: {best_val_recall:.4f}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train FairSpeech using a YAML config")
-    parser.add_argument("--config", type=str, required=True,
-                        help="Path to training config YAML file")
-    args = parser.parse_args()
-
-    with open(args.config, "r") as f:
+    p = argparse.ArgumentParser()
+    p.add_argument("--config", type=str, required=True, help="config.yaml path")
+    args = p.parse_args()
+    with open(args.config) as f:
         cfg = yaml.safe_load(f)
-
     train(cfg)

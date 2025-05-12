@@ -1,3 +1,5 @@
+# src/data/RAVDESS_dataset.py
+
 import torch
 from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
@@ -19,30 +21,14 @@ GENDER2IDX = {'male': 0, 'female': 1}
 class RAVDESSDataset(Dataset):
     """
     PyTorch Dataset for reclassified RAVDESS audio-only files,
-    loading with librosa to avoid torchaudio binary issues.
-    Expects directory structure:
-        processed/
-          ├── male/
-          │    ├── Actor_01/
-          │    │    ├── neutral/
-          │    │    │    ├── ... .wav
-          │    │    ├── happy/
-          │    │    │    └── ...
-          │    └── Actor_02/ ...
-          └── female/ ...
-    Optionally filters by split ('train','val','test') based on actor ID.
+    loading with librosa. Now returns (waveform, emotion, gender, actor_id).
     """
-    def __init__(
-        self,
-        root: str,
-        split: str = None,
-        sample_rate: int = 16000,
-        transform=None,
-    ):
+    def __init__(self, root: str, split: str = None, sample_rate: int = 16000, transform=None):
         self.root = Path(root)
         self.sample_rate = sample_rate
         self.transform = transform
-        self.items = []  # list of (wav_path, emo_idx, gender_idx)
+        # items: list of tuples (wav_path, emotion_idx, gender_idx, actor_id)
+        self.items = []
 
         for gender_str, gender_idx in GENDER2IDX.items():
             gender_dir = self.root / gender_str
@@ -51,47 +37,49 @@ class RAVDESSDataset(Dataset):
             for actor_dir in sorted(gender_dir.iterdir()):
                 if not actor_dir.is_dir():
                     continue
-                actor_id = int(actor_dir.name.split('_')[-1])
-                if split == 'train' and not (1 <= actor_id <= 16):
+                actor_id = int(actor_dir.name.split("_")[-1])
+                # split filtering
+                if split == 'train' and not (1 <= actor_id <= 20):
                     continue
-                if split == 'val'   and not (17 <= actor_id <= 20):
+                if split == 'val'   and not (21 <= actor_id <= 22):
                     continue
-                if split == 'test'  and not (21 <= actor_id <= 24):
+                if split == 'test'  and not (23 <= actor_id <= 24):
                     continue
+                # iterate emotions
                 for emo_dir in sorted(actor_dir.iterdir()):
                     emo_str = emo_dir.name
                     if emo_str not in EMOTION2IDX:
                         continue
                     emo_idx = EMOTION2IDX[emo_str]
                     for wav_path in sorted(emo_dir.glob("*.wav")):
-                        self.items.append((wav_path, emo_idx, gender_idx))
+                        self.items.append((wav_path, emo_idx, gender_idx, actor_id))
 
     def __len__(self):
         return len(self.items)
 
     def __getitem__(self, idx):
-        wav_path, emo_idx, gender_idx = self.items[idx]
-        # load and resample audio with librosa
-        waveform_np, sr = librosa.load(
+        wav_path, emo_idx, gender_idx, actor_id = self.items[idx]
+        waveform_np, _ = librosa.load(
             str(wav_path),
-            sr=self.sample_rate,    # resample on load
-            mono=True              # force mono
+            sr=self.sample_rate,
+            mono=True
         )
-        waveform = torch.from_numpy(waveform_np)  # shape: (num_samples,)
+        waveform = torch.from_numpy(waveform_np).float()
         if self.transform:
             waveform = self.transform(waveform)
-        return waveform, emo_idx, gender_idx
+        return waveform, emo_idx, gender_idx, actor_id
 
 def pad_collate(batch):
     """
     Pads variable-length waveforms to max length in batch.
+    Discards actor_id.
     Returns:
         waveforms: FloatTensor (batch, max_len)
         emotions : LongTensor (batch,)
         genders  : LongTensor (batch,)
         lengths  : LongTensor (batch,)  # original lengths
     """
-    waveforms, emos, gens = zip(*batch)
+    waveforms, emos, gens, _ = zip(*batch)
     lengths = torch.tensor([w.shape[0] for w in waveforms], dtype=torch.long)
     max_len = lengths.max().item()
     batch_size = len(waveforms)
@@ -115,13 +103,12 @@ if __name__ == "__main__":
                         help="Batch size for DataLoader test")
     args = parser.parse_args()
 
-    # Sanity check splits and label distribution
     print("=== RAVDESS Dataset Sanity Check ===\n")
     for split in ("train", "val", "test"):
         ds = RAVDESSDataset(root=args.root, split=split, sample_rate=16000)
         print(f"Split '{split}': {len(ds)} samples")
-        emo_counts = Counter([emo for _, emo, _ in ds.items])
-        gen_counts = Counter([gen for _, _, gen in ds.items])
+        emo_counts = Counter([emo for _, emo, _, _ in ds.items])
+        gen_counts = Counter([gen for _, _, gen, _ in ds.items])
         idx2emo = {v: k for k, v in EMOTION2IDX.items()}
         idx2gen = {v: k for k, v in GENDER2IDX.items()}
         print("  Emotion distribution:")
@@ -132,13 +119,11 @@ if __name__ == "__main__":
             print(f"    {idx2gen[idx]:<6}: {gen_counts[idx]}")
         print()
 
-    # DataLoader test
     print("=== DataLoader Test ===")
-    from torch.utils.data import DataLoader
     ds = RAVDESSDataset(root=args.root, split="train", sample_rate=16000)
     loader = DataLoader(ds, batch_size=args.batch_size,
-                        shuffle=True, collate_fn=pad_collate,
-                        num_workers=0)
+                        shuffle=True, collate_fn=pad_collate, num_workers=0)
+
     wave_batch, emo_batch, gen_batch, lengths = next(iter(loader))
     print(f"waveforms: {wave_batch.shape}")
     print(f"emotions:  {emo_batch}")
