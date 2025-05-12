@@ -135,6 +135,18 @@ def train(cfg):
     criterion_emo = nn.CrossEntropyLoss(weight=weights)
     criterion_gen = nn.CrossEntropyLoss()
 
+    # -- parameter counts and model size
+    fe_params = sum(p.numel() for p in fe.parameters() if p.requires_grad)
+    clf_params = sum(p.numel() for p in clf.parameters() if p.requires_grad)
+    total_params = fe_params + clf_params
+    print(f"Learnable parameters - FeatureExtractor: {fe_params:,}, Classifier: {clf_params:,}, Total: {total_params:,}")
+    # Approximate model size in MB (assuming float32, 4 bytes per parameter)
+    fe_size_mb = fe_params * 4 / (1024 ** 2)
+    clf_size_mb = clf_params * 4 / (1024 ** 2)
+    total_size_mb = total_params * 4 / (1024 ** 2)
+    print(f"Model size (MB) - FeatureExtractor: {fe_size_mb:.2f} MB, "
+          f"Classifier: {clf_size_mb:.2f} MB, Total: {total_size_mb:.2f} MB")
+
     # -- optimizer & scheduler
     optimizer = torch.optim.AdamW(
         list(clf.parameters()),
@@ -223,6 +235,7 @@ def train(cfg):
                     ], dim=0)
                 else:
                     norm_feats = feats
+                norm_feats = feats
                 
                 if cls_type == 'transformer':
                     emo_logits, _ = clf(norm_feats, lambda_grl=0.0)

@@ -39,11 +39,11 @@ class RAVDESSDataset(Dataset):
                     continue
                 actor_id = int(actor_dir.name.split("_")[-1])
                 # split filtering
-                if split == 'train' and not (1 <= actor_id <= 20):
+                if split == 'train' and not (1 <= actor_id <= 16):
                     continue
-                if split == 'val'   and not (21 <= actor_id <= 22):
+                if split == 'val'   and not (17 <= actor_id <= 20):
                     continue
-                if split == 'test'  and not (23 <= actor_id <= 24):
+                if split == 'test'  and not (21 <= actor_id <= 24):
                     continue
                 # iterate emotions
                 for emo_dir in sorted(actor_dir.iterdir()):

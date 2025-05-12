@@ -5,11 +5,11 @@ model:
   type: wav2vec2
   pretrained: facebook/wav2vec2-base-960h
   trainable: false
-  classifier: conv1D # conv1D or transformer
+  classifier: transformer # conv1D or transformer
   conv_hidden_dim: 128
   conv_dropout: 0.2
   use_weighted_sum: true
-  speacker-wise_normalization: false
+  speacker-wise_normalization: true
 
 transformer:
   feature_dim: 768
@@ -21,7 +21,7 @@ transformer:
   dropout: 0.5
 
 optimizer:
-  lr: 1e-3
+  lr: 5e-4
   weight_decay: 0
 
 training:
