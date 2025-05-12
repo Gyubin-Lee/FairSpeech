@@ -4,22 +4,22 @@ data:
   root: data/RAVDESS_audio/processed
 
 model:
-  type: hubert                       # 'wav2vec2' or 'hubert'
-  pretrained: facebook/hubert-base-ls960 # 'facebook/wav2vec2-base-960h' or 'facebook/hubert-base-ls960'
+  type: wav2vec2                       # 'wav2vec2' or 'hubert'
+  pretrained: facebook/wav2vec2-base-960h # 'facebook/wav2vec2-base-960h' or 'facebook/hubert-base-ls960'
   trainable: false
   classifier: transformer            # 'transformer' or 'conv1d'
   use_weighted_sum: true
   speaker_wise_normalization: false
 
 conv1d:
-  hidden_dim: 128
-  dropout: 0.2
+  hidden_dim: 512
+  dropout: 0.5
   lr: 1e-3                          # learning rate for conv1d classifier
 
 transformer:
   input_dim: 256
   feature_dim: 768
-  num_layers: 2
+  num_layers: 3
   nhead: 4
   dim_feedforward: 256
   pool: cls
@@ -31,8 +31,9 @@ training:
   max_seq_len: 250
   adv_weight: 0.0
   lambda_grl: 1.0
-  epochs: 30
+  epochs: 50
   num_workers: 4
+  num_emotions: 7
 
 # device and logging
 device: cuda
