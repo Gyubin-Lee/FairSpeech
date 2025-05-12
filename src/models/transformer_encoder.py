@@ -41,6 +41,10 @@ class TransformerClassifier(nn.Module):
         else:
             self.input_proj = nn.Identity()
 
+        # learnable positional embeddings
+        self.max_len = 250
+        self.pos_embedding = nn.Embedding(self.max_len, input_dim)
+
         # learnable [CLS] token for 'cls' pooling
         self.pool = pool
         if pool == "cls":
@@ -86,6 +90,15 @@ class TransformerClassifier(nn.Module):
             batch_size = x.size(0)
             cls_tokens = self.cls_token.expand(batch_size, -1, -1)  # (batch,1,dim)
             x = torch.cat([cls_tokens, x], dim=1)                   # (batch, seq_len+1, dim)
+            self.max_len += 1  # adjust max_len for [CLS] token
+
+        # add learnable positional embeddings
+        seq_len = x.size(1)
+        if seq_len > self.max_len:
+            raise ValueError(f"Sequence length {seq_len} exceeds maximum {self.max_len}")
+        positions = torch.arange(seq_len, device=x.device).unsqueeze(0)  # (1, seq_len)
+        pe = self.pos_embedding(positions)  # (1, seq_len, input_dim)
+        x = x + pe
 
         # reshape for transformer: (seq_len(+1), batch, dim)
         x = x.permute(1, 0, 2)

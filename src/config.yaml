@@ -7,24 +7,24 @@ model:
   type: wav2vec2                       # 'wav2vec2' or 'hubert'
   pretrained: facebook/wav2vec2-base-960h # 'facebook/wav2vec2-base-960h' or 'facebook/hubert-base-ls960'
   trainable: false
-  classifier: transformer            # 'transformer' or 'conv1d'
+  classifier: conv1d            # 'transformer' or 'conv1d'
   use_weighted_sum: true
-  speaker_wise_normalization: false
+  speaker_wise_normalization: true # approximate speaker-wise normalization by layer normalization
 
 conv1d:
-  hidden_dim: 512
-  dropout: 0.5
+  hidden_dim: 128
+  dropout: 0.2
   lr: 1e-3                          # learning rate for conv1d classifier
 
 transformer:
-  input_dim: 256
+  input_dim: 128
   feature_dim: 768
-  num_layers: 3
+  num_layers: 2
   nhead: 4
-  dim_feedforward: 256
+  dim_feedforward: 128
   pool: cls
   dropout: 0.5
-  lr: 1e-4                         # learning rate for transformer classifier
+  lr: 1e-3                         # learning rate for transformer classifier
 
 training:
   batch_size: 32

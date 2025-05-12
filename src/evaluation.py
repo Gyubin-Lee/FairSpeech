@@ -129,7 +129,8 @@ def main(args):
             input_dim=fe.model.config.hidden_size,
             hidden_dim=conv_h,
             num_emotions=cfg['training']['num_emotions'],
-            dropout=conv_d
+            dropout=conv_d,
+            speaker_wise_normalization=cfg['model'].get('speaker_wise_normalization', False)
         )
     clf = clf.to(device)
 
@@ -146,13 +147,11 @@ def main(args):
     )
     print(param_info)
 
-    # load checkpoints
+    # Load the best saved models (feature extractor and classifier)
     fe_ckpt  = out_dir / "best_fe.pt"
     clf_ckpt = out_dir / "best_clf.pt"
-    if fe_ckpt.exists():
-        fe.load_state_dict(torch.load(fe_ckpt, map_location=device))
-    if clf_ckpt.exists():
-        clf.load_state_dict(torch.load(clf_ckpt, map_location=device))
+    fe.load_state_dict(torch.load(fe_ckpt, map_location=device))
+    clf.load_state_dict(torch.load(clf_ckpt, map_location=device))
 
     # evaluate
     all_true, all_pred = [], []
@@ -164,18 +163,10 @@ def main(args):
             out = fe(wave)
             feats = out if isinstance(out, torch.Tensor) else out[-1]
 
-            if speaker_norm:
-                norm_feats = torch.stack([
-                    (feats[i] - spk_means[int(a.item())]) / spk_stds[int(a.item())]
-                    for i, a in enumerate(aids)
-                ], dim=0)
-            else:
-                norm_feats = feats
-
             if clf_type == 'transformer':
-                emo_logits, _ = clf(norm_feats, lambda_grl=0.0)
+                emo_logits, _ = clf(feats, lambda_grl=0.0)
             else:
-                emo_logits = clf(norm_feats)
+                emo_logits = clf(feats)
 
             preds = emo_logits.argmax(dim=1)
             all_true.extend(emos.cpu().tolist())

@@ -13,8 +13,10 @@ class EmotionHead(nn.Module):
     def __init__(self, input_dim: int, num_emotions: int, dropout: float = 0.1):
         super().__init__()
         self.classifier = nn.Sequential(
-            nn.Dropout(dropout),
-            nn.Linear(input_dim, num_emotions)
+            nn.Linear(input_dim, input_dim),
+            #nn.ReLU(),
+            #nn.Dropout(dropout),
+            #nn.Linear(input_dim, num_emotions)
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -38,8 +40,10 @@ class GenderHead(nn.Module):
     def __init__(self, input_dim: int, num_genders: int = 2, dropout: float = 0.1):
         super().__init__()
         self.classifier = nn.Sequential(
-            nn.Dropout(dropout),
-            nn.Linear(input_dim, num_genders)
+            nn.Linear(input_dim, input_dim),
+            #nn.ReLU(),
+            #nn.Dropout(dropout),
+            #nn.Linear(input_dim, num_genders)
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:

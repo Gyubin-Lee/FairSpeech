@@ -13,7 +13,8 @@ class PointwiseConv1DClassifier(nn.Module):
         input_dim: int,
         hidden_dim: int = 128,
         num_emotions: int = 7,
-        dropout: float = 0.2
+        dropout: float = 0.2,
+        speaker_wise_normalization: bool = False
     ):
         super().__init__()
         # two pointwise conv layers
@@ -27,6 +28,12 @@ class PointwiseConv1DClassifier(nn.Module):
 
         # final classifier
         self.fc = nn.Linear(hidden_dim, num_emotions)
+        # optional channel-wise LayerNorm over the hidden dimension
+        self.speaker_wise_normalization = speaker_wise_normalization
+        if speaker_wise_normalization:
+            self.channel_norm = nn.LayerNorm(input_dim)
+        else:
+            self.channel_norm = nn.Identity()
 
     def forward(
         self,
@@ -40,6 +47,10 @@ class PointwiseConv1DClassifier(nn.Module):
         Returns:
             emo_logits: Tensor of shape (batch_size, num_emotions)
         """
+        
+        # apply channel-wise LayerNorm if enabled
+        features = self.channel_norm(features)
+        
         # rearrange to (batch, channels, seq_len)
         x = features.permute(0, 2, 1)  
 
@@ -55,7 +66,7 @@ class PointwiseConv1DClassifier(nn.Module):
 
         # global average pooling over time dimension
         x = x.mean(dim=2)  # shape: (batch_size, hidden_dim)
-
+        
         # final linear projection
         emo_logits = self.fc(x)  # shape: (batch_size, num_emotions)
         return emo_logits

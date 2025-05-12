@@ -123,7 +123,8 @@ def train(cfg):
             input_dim=feat_dim,
             hidden_dim=conv_h,
             num_emotions=cfg['training']['num_emotions'],
-            dropout=conv_d
+            dropout=conv_d,
+            speaker_wise_normalization=cfg['model'].get('speaker_wise_normalization', False)
         )
     else:
         raise ValueError(f"Unknown classifier: {cls_type}")
@@ -153,15 +154,17 @@ def train(cfg):
         lr = float(cfg['transformer']['lr'])
     else:
         lr = float(cfg['conv1d']['lr'])
-    wd = float(cfg['training'].get('weight_decay', 0.0))
-    optimizer = torch.optim.AdamW(
-        list(clf.parameters()),
-        lr=lr,
-        weight_decay=wd
+    
+    # include any trainable feature-extractor parameters (e.g., layer_weights)
+    fe_trainable = [p for p in fe.parameters() if p.requires_grad]
+    clf_trainable = [p for p in clf.parameters() if p.requires_grad]
+    optimizer = torch.optim.Adam(
+        fe_trainable + clf_trainable,
+        lr=lr
     )
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
 
-    best_val_recall = 0.0
+    best_val_loss = 10.0
     no_improve_count = 0
     patience = 10
 
@@ -182,20 +185,11 @@ def train(cfg):
             out = fe(wave)
             feats = out if isinstance(out, torch.Tensor) else out[-1]  # (B, T, D)
 
-            # optional speaker-wise normalization
-            if cfg['model'].get('speaker_wise_normalization', False):
-                norm_feats = torch.stack([
-                    (feats[i] - spk_means[int(a.item())]) / spk_stds[int(a.item())]
-                    for i, a in enumerate(aids)
-                ], dim=0)
-            else:
-                norm_feats = feats
-
             # forward
             if cls_type == 'transformer':
-                emo_logits, gen_logits = clf(norm_feats, lambda_grl=cfg['training']['lambda_grl'])
+                emo_logits, gen_logits = clf(feats, lambda_grl=cfg['training']['lambda_grl'])
             else:
-                emo_logits = clf(norm_feats)
+                emo_logits = clf(feats)
                 gen_logits = None
 
             # loss
@@ -235,20 +229,11 @@ def train(cfg):
                 wave, emos, aids = wave.to(device), emos.to(device), aids.to(device)
                 out = fe(wave)
                 feats = out if isinstance(out, torch.Tensor) else out[-1]
-
-                if cfg['model'].get('speaker_wise_normalization', False):
-                    norm_feats = torch.stack([
-                        (feats[i] - spk_means[int(a.item())]) / spk_stds[int(a.item())]
-                        for i, a in enumerate(aids)
-                    ], dim=0)
-                else:
-                    norm_feats = feats
-                norm_feats = feats
                 
                 if cls_type == 'transformer':
-                    emo_logits, _ = clf(norm_feats, lambda_grl=0.0)
+                    emo_logits, _ = clf(feats, lambda_grl=0.0)
                 else:
-                    emo_logits = clf(norm_feats)
+                    emo_logits = clf(feats)
 
                 l = criterion_emo(emo_logits, emos)
                 bs = wave.size(0)
@@ -276,9 +261,11 @@ def train(cfg):
                      f"{val_loss:.4f},{val_acc:.4f},{val_recall:.4f}\n")
 
         # early stopping logic
-        if val_recall > best_val_recall:
-            best_val_recall = val_recall
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
             no_improve_count = 0
+            # save both feature extractor and classifier
+            torch.save(fe.state_dict(), out_dir/"best_fe.pt")
             torch.save(clf.state_dict(), out_dir/"best_clf.pt")
         else:
             no_improve_count += 1
@@ -288,7 +275,8 @@ def train(cfg):
 
         scheduler.step()
 
-    print(f"\nTraining complete. Best Val recall: {best_val_recall:.4f}")
+
+    print(f"\nTraining complete. Best Val loss: {best_val_loss:.4f}")
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
