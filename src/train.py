@@ -69,15 +69,15 @@ def train(cfg):
     device = torch.device(cfg['device'])
 
     # -- load speaker stats JSON
-    stats_file = Path(cfg['data_root']) / f"speaker_feature_stats_{cfg['model']['type']}.json"
+    stats_file = Path(cfg['data']['root']) / f"speaker_feature_stats_{cfg['model']['type']}.json"
     with open(stats_file) as f:
         raw_stats = json.load(f)
     spk_means = {int(a): torch.tensor(v['mean'], device=device) for a, v in raw_stats.items()}
     spk_stds  = {int(a): torch.tensor(v['std'],  device=device) for a, v in raw_stats.items()}
 
     # -- datasets & loaders
-    train_ds = RAVDESSDataset(root=cfg['data_root'], split="train", sample_rate=cfg.get('sample_rate',16000))
-    val_ds   = RAVDESSDataset(root=cfg['data_root'], split="val",   sample_rate=cfg.get('sample_rate',16000))
+    train_ds = RAVDESSDataset(root=cfg['data']['root'], split="train", sample_rate=cfg.get('sample_rate',16000))
+    val_ds   = RAVDESSDataset(root=cfg['data']['root'], split="val",   sample_rate=cfg.get('sample_rate',16000))
 
     down_f = 320
     train_loader = DataLoader(
@@ -117,12 +117,12 @@ def train(cfg):
             pool=tconf['pool']
         )
     elif cls_type == 'conv1d':
-        conv_h = cfg['model'].get('conv_hidden_dim', 128)
-        conv_d = cfg['model'].get('conv_dropout', 0.2)
+        conv_h = cfg['conv1d']['hidden_dim']
+        conv_d = cfg['conv1d']['dropout']
         clf = PointwiseConv1DClassifier(
             input_dim=feat_dim,
             hidden_dim=conv_h,
-            num_emotions=cfg['training'].get('num_emotions', 7),
+            num_emotions=cfg['training']['num_emotions'],
             dropout=conv_d
         )
     else:
@@ -148,10 +148,16 @@ def train(cfg):
           f"Classifier: {clf_size_mb:.2f} MB, Total: {total_size_mb:.2f} MB")
 
     # -- optimizer & scheduler
+    # determine learning rate
+    if cls_type == 'transformer':
+        lr = float(cfg['transformer']['lr'])
+    else:
+        lr = float(cfg['conv1d']['lr'])
+    wd = float(cfg['training'].get('weight_decay', 0.0))
     optimizer = torch.optim.AdamW(
         list(clf.parameters()),
-        lr=float(cfg['optimizer']['lr']),
-        weight_decay=float(cfg['optimizer']['weight_decay'])
+        lr=lr,
+        weight_decay=wd
     )
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
 

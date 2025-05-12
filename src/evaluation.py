@@ -77,7 +77,7 @@ def main(args):
     # load speaker stats if needed
     speaker_norm = cfg['training'].get('speaker_wise_normalization', False)
     if speaker_norm:
-        stats_file = Path(cfg['data_root']) / f"speaker_feature_stats_{cfg['model']['type']}.json"
+        stats_file = Path(cfg['data']['root']) / f"speaker_feature_stats_{cfg['model']['type']}.json"
         with open(stats_file) as f:
             raw_stats = json.load(f)
         spk_means = {int(a): torch.tensor(v['mean'], device=device) for a, v in raw_stats.items()}
@@ -85,7 +85,7 @@ def main(args):
 
     # dataset & loader
     test_ds = RAVDESSDataset(
-        root=cfg['data_root'],
+        root=cfg['data']['root'],
         split="test",
         sample_rate=cfg.get('sample_rate', 16000)
     )
@@ -123,12 +123,12 @@ def main(args):
             pool=tconf['pool']
         )
     else:
-        conv_h = cfg['model'].get('conv_hidden_dim', 128)
-        conv_d = cfg['model'].get('conv_dropout', 0.2)
+        conv_h = cfg['conv1d']['hidden_dim']
+        conv_d = cfg['conv1d']['dropout']
         clf = PointwiseConv1DClassifier(
             input_dim=fe.model.config.hidden_size,
             hidden_dim=conv_h,
-            num_emotions=cfg['training'].get('num_emotions', 7),
+            num_emotions=cfg['training']['num_emotions'],
             dropout=conv_d
         )
     clf = clf.to(device)
