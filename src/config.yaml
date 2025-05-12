@@ -2,26 +2,29 @@
 data_root: data/RAVDESS_audio/processed
 
 model:
-  type: wav2vec2
-  pretrained: facebook/wav2vec2-base-960h
+  # type: wav2vec2 
+  # pretrained: facebook/wav2vec2-base-960h
+  type: hubert
+  pretrained: facebook/hubert-base-ls960
   trainable: false
-  classifier: transformer # conv1D or transformer
+  # classifier: conv1D 
+  classifier: transformer
   conv_hidden_dim: 128
   conv_dropout: 0.2
   use_weighted_sum: true
-  speacker-wise_normalization: true
+  speacker_wise_normalization: false
 
 transformer:
   feature_dim: 768
-  input_dim: 768
+  input_dim: 256
   num_layers: 2
   nhead: 4
-  dim_feedforward: 512
+  dim_feedforward: 256
   pool: cls
   dropout: 0.5
 
 optimizer:
-  lr: 5e-4
+  lr: 1e-4
   weight_decay: 0
 
 training:

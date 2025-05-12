@@ -133,6 +133,19 @@ def main(args):
         )
     clf = clf.to(device)
 
+    # Count learnable parameters and approximate model size
+    fe_params = sum(p.numel() for p in fe.parameters() if p.requires_grad)
+    clf_params = sum(p.numel() for p in clf.parameters() if p.requires_grad)
+    total_params = fe_params + clf_params
+    fe_size_mb = fe_params * 4 / (1024 ** 2)
+    clf_size_mb = clf_params * 4 / (1024 ** 2)
+    total_size_mb = total_params * 4 / (1024 ** 2)
+    param_info = (
+        f"Parameters - Fe: {fe_params:,}, Clf: {clf_params:,}, Total: {total_params:,}\n"
+        f"Model Size   - Fe: {fe_size_mb:.2f} MB, Clf: {clf_size_mb:.2f} MB, Total: {total_size_mb:.2f} MB\n"
+    )
+    print(param_info)
+
     # load checkpoints
     fe_ckpt  = out_dir / "best_fe.pt"
     clf_ckpt = out_dir / "best_clf.pt"
@@ -183,7 +196,7 @@ def main(args):
     acc, recall = compute_metrics(all_true, all_pred)
     cm = confusion_matrix(all_true, all_pred)
 
-    result = (
+    result = param_info + (
         f"Test Accuracy: {acc:.4f}\n"
         f"Test UAR    : {recall:.4f}\n"
         f"Confusion Matrix:\n{cm}"
@@ -215,9 +228,3 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     main(args)
-
-# How to run:
-# python src/evaluation.py \
-#   --checkpoint_dir logs/20250509_143012 \
-#   --batch_size 32 \
-#   --num_workers 4

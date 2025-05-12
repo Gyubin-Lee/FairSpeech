@@ -155,7 +155,9 @@ def train(cfg):
     )
     scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.95)
 
-    best_val_recall = 0.0
+    best_val_loss = 100.0
+    no_improve_count = 0
+    patience = 10
 
     # -- training loop
     for epoch in range(1, cfg['training']['epochs']+1):
@@ -267,14 +269,20 @@ def train(cfg):
             mf.write(f"{epoch},{train_loss:.4f},{train_acc:.4f},{train_recall:.4f},"
                      f"{val_loss:.4f},{val_acc:.4f},{val_recall:.4f}\n")
 
-        # save best
-        if val_recall > best_val_recall:
-            best_val_recall = val_recall
+        # early stopping logic
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            no_improve_count = 0
             torch.save(clf.state_dict(), out_dir/"best_clf.pt")
+        else:
+            no_improve_count += 1
+            if no_improve_count >= patience:
+                print(f"No improvement in val_loss for {patience} epochs, stopping early.")
+                break
 
         scheduler.step()
 
-    print(f"\nTraining complete. Best Val Recall: {best_val_recall:.4f}")
+    print(f"\nTraining complete. Best Val loss: {best_val_loss:.4f}")
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
