@@ -31,7 +31,8 @@ class TransformerClassifier(nn.Module):
         num_emotions: int = 7,
         num_genders: int = 2,
         dropout: float = 0.1,
-        pool: str = "mean"
+        pool: str = "mean",
+        speaker_wise_normalization: bool = False
     ):
         super().__init__()
 
@@ -67,6 +68,13 @@ class TransformerClassifier(nn.Module):
         self.grl = GradientReversal()
         self.gender_head = GenderHead(input_dim, num_genders)
 
+        # optional channel-wise LayerNorm over the hidden dimension
+        self.speaker_wise_normalization = speaker_wise_normalization
+        if speaker_wise_normalization:
+            self.channel_norm = nn.LayerNorm(feature_dim)
+        else:
+            self.channel_norm = nn.Identity()
+
     def forward(
         self,
         features: torch.Tensor,
@@ -82,6 +90,10 @@ class TransformerClassifier(nn.Module):
             emo_logits: (batch_size, num_emotions)
             gender_logits: (batch_size, num_genders)
         """
+
+        # apply channel-wise LayerNorm if enabled
+        features = self.channel_norm(features)
+
         # project features to transformer dimension
         x = self.input_proj(features)  # (batch, seq_len, input_dim)
 

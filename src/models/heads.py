@@ -10,13 +10,12 @@ class EmotionHead(nn.Module):
         num_emotions (int): number of emotion classes
         dropout (float): dropout probability before the final linear layer
     """
-    def __init__(self, input_dim: int, num_emotions: int, dropout: float = 0.1):
+    def __init__(self, input_dim: int, num_emotions: int):
         super().__init__()
         self.classifier = nn.Sequential(
             nn.Linear(input_dim, input_dim),
-            #nn.ReLU(),
-            #nn.Dropout(dropout),
-            #nn.Linear(input_dim, num_emotions)
+            nn.Tanh(),
+            nn.Linear(input_dim, num_emotions)
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -37,13 +36,12 @@ class GenderHead(nn.Module):
         num_genders (int): number of gender classes (usually 2)
         dropout (float): dropout probability before the final linear layer
     """
-    def __init__(self, input_dim: int, num_genders: int = 2, dropout: float = 0.1):
+    def __init__(self, input_dim: int, num_genders: int = 2):
         super().__init__()
         self.classifier = nn.Sequential(
             nn.Linear(input_dim, input_dim),
-            #nn.ReLU(),
-            #nn.Dropout(dropout),
-            #nn.Linear(input_dim, num_genders)
+            nn.Tanh(),
+            nn.Linear(input_dim, num_genders)
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
