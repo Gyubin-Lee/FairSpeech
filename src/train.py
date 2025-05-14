@@ -12,6 +12,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 from sklearn.metrics import recall_score
+import torch.nn.functional as F
 
 from data.RAVDESS_dataset import RAVDESSDataset
 from models.feature_extractor import FeatureExtractor
@@ -64,7 +65,12 @@ def train(cfg):
     # metrics log
     metrics_path = out_dir / "metrics.csv"
     with open(metrics_path, "w") as mf:
-        mf.write("epoch,train_loss,train_acc,train_recall,val_loss,val_acc,val_recall\n")
+        mf.write(
+            "epoch,train_loss,train_acc,train_recall,"
+            "val_loss,val_acc,val_recall,"
+            "male_loss,male_acc,male_recall,"
+            "female_loss,female_acc,female_recall\n"
+        )
 
     device = torch.device(cfg['device'])
 
@@ -115,7 +121,8 @@ def train(cfg):
             num_genders=cfg['training'].get('num_genders', 2),
             dropout=tconf['dropout'],
             pool=tconf['pool'],
-            speaker_wise_normalization=cfg['model'].get('speaker_wise_normalization', False)
+            speaker_wise_normalization=cfg['model'].get('speaker_wise_normalization', False),
+            predict_gender=tconf.get('predict_gender', False)
         )
     elif cls_type == 'conv1d':
         conv_h = cfg['conv1d']['hidden_dim']
@@ -133,9 +140,16 @@ def train(cfg):
 
     # -- loss functions (speaker-norm targets only emo)
     emo_counts = Counter([emo for _, emo, _, _ in train_ds.items])
-    weights = torch.tensor([1.0/emo_counts[i] for i in range(len(emo_counts))], device=device)
+    total_samples = sum(emo_counts.values())
+    num_classes = len(emo_counts)
+    weights = torch.tensor(
+        [ total_samples / (num_classes * emo_counts[i]) for i in range(num_classes) ],
+        device=device
+    )
     criterion_emo = nn.CrossEntropyLoss(weight=weights)
+    criterion_emo_none = nn.CrossEntropyLoss(weight=weights, reduction='none')
     criterion_gen = nn.CrossEntropyLoss()
+    
 
     # -- parameter counts and model size
     fe_params = sum(p.numel() for p in fe.parameters() if p.requires_grad)
@@ -221,28 +235,42 @@ def train(cfg):
 
         # validation
         clf.eval()
+        # per-gender accumulators
+        val_trues_g = {0: [], 1: []}
+        val_preds_g = {0: [], 1: []}
+        val_loss_g  = {0: 0.0, 1: 0.0}
+        val_count_g = {0: 0,   1: 0}
         val_trues, val_preds = [], []
         val_loss = 0.0
 
         pbar = tqdm(val_loader, desc="VAL  ")
         with torch.no_grad():
             for wave, emos, gens, aids in pbar:
-                wave, emos, aids = wave.to(device), emos.to(device), aids.to(device)
+                wave, emos, gens, aids = wave.to(device), emos.to(device), gens.to(device), aids.to(device)
                 out = fe(wave)
                 feats = out if isinstance(out, torch.Tensor) else out[-1]
-                
+
                 if cls_type == 'transformer':
                     emo_logits, _ = clf(feats, lambda_grl=0.0)
                 else:
                     emo_logits = clf(feats)
 
-                l = criterion_emo(emo_logits, emos)
-                bs = wave.size(0)
-                val_loss += l.item() * bs
+                # per-sample losses for gender grouping
+                losses = criterion_emo_none(emo_logits, emos)  # (bs,)
+                for loss_i, g in zip(losses, gens):
+                    grp = int(g.item())
+                    val_loss_g[grp]  += loss_i.item()
+                    val_count_g[grp] += 1
+                val_loss += losses.sum().item()
 
                 preds = emo_logits.argmax(dim=1)
+                # collect overall
                 val_trues.extend(emos.cpu().tolist())
                 val_preds.extend(preds.cpu().tolist())
+                # collect per-gender
+                for emo_t, pred, g in zip(emos.cpu().tolist(), preds.cpu().tolist(), gens.cpu().tolist()):
+                    val_trues_g[g].append(emo_t)
+                    val_preds_g[g].append(pred)
 
                 # inside the VAL loop:
                 avg_vloss = val_loss / len(val_trues)
@@ -252,14 +280,26 @@ def train(cfg):
         val_loss = val_loss / len(val_trues)
         val_acc, val_recall = compute_metrics(val_trues, val_preds)
 
+        # per-gender metrics
+        male_loss = val_loss_g[0] / val_count_g[0] if val_count_g[0] > 0 else 0.0
+        female_loss = val_loss_g[1] / val_count_g[1] if val_count_g[1] > 0 else 0.0
+        male_acc, male_recall   = compute_metrics(val_trues_g[0], val_preds_g[0])
+        female_acc, female_recall = compute_metrics(val_trues_g[1], val_preds_g[1])
+
         print(f"\nEpoch {epoch} summary:")
         print(f"  Train loss: {train_loss:.4f}, Acc: {train_acc:.4f}, Recall: {train_recall:.4f}")
         print(f"  Val   loss: {val_loss:.4f}, Acc: {val_acc:.4f}, Recall: {val_recall:.4f}")
+        print(f"    Male   loss: {male_loss:.4f}, Acc: {male_acc:.4f}, Recall: {male_recall:.4f}")
+        print(f"    Female loss: {female_loss:.4f}, Acc: {female_acc:.4f}, Recall: {female_recall:.4f}")
 
         # log
         with open(metrics_path, "a") as mf:
-            mf.write(f"{epoch},{train_loss:.4f},{train_acc:.4f},{train_recall:.4f},"
-                     f"{val_loss:.4f},{val_acc:.4f},{val_recall:.4f}\n")
+            mf.write(
+                f"{epoch},{train_loss:.4f},{train_acc:.4f},{train_recall:.4f},"
+                f"{val_loss:.4f},{val_acc:.4f},{val_recall:.4f},"
+                f"{male_loss:.4f},{male_acc:.4f},{male_recall:.4f},"
+                f"{female_loss:.4f},{female_acc:.4f},{female_recall:.4f}\n"
+            )
 
         # early stopping logic
         if val_loss < best_val_loss:

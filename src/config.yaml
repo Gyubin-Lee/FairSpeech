@@ -17,21 +17,22 @@ conv1d:
   lr: 1e-3                          # learning rate for conv1d classifier
 
 transformer:
-  input_dim: 64
+  input_dim: 128
   feature_dim: 768
-  num_layers: 2
-  nhead: 4
-  dim_feedforward: 64
-  pool: cls
-  dropout: 0.5
-  lr: 2e-4                         # learning rate for transformer classifier
+  num_layers: 1
+  nhead: 1
+  dim_feedforward: 128
+  pool: max
+  dropout: 0.2
+  lr: 5e-4                         # learning rate for transformer classifier
+  predict_gender: false
 
 training:
   batch_size: 32
   max_seq_len: 250
-  adv_weight: 0.0
+  adv_weight: 0.5
   lambda_grl: 1.0
-  epochs: 50
+  epochs: 25
   num_workers: 4
   num_emotions: 7
 

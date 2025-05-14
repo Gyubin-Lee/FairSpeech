@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 class EmotionHead(nn.Module):
     """
@@ -13,8 +14,6 @@ class EmotionHead(nn.Module):
     def __init__(self, input_dim: int, num_emotions: int):
         super().__init__()
         self.classifier = nn.Sequential(
-            nn.Linear(input_dim, input_dim),
-            nn.Tanh(),
             nn.Linear(input_dim, num_emotions)
         )
 
@@ -39,8 +38,6 @@ class GenderHead(nn.Module):
     def __init__(self, input_dim: int, num_genders: int = 2):
         super().__init__()
         self.classifier = nn.Sequential(
-            nn.Linear(input_dim, input_dim),
-            nn.Tanh(),
             nn.Linear(input_dim, num_genders)
         )
 

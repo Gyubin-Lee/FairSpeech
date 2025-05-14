@@ -32,7 +32,8 @@ class TransformerClassifier(nn.Module):
         num_genders: int = 2,
         dropout: float = 0.1,
         pool: str = "mean",
-        speaker_wise_normalization: bool = False
+        speaker_wise_normalization: bool = False,
+        predict_gender: bool = False,
     ):
         super().__init__()
 
@@ -44,7 +45,6 @@ class TransformerClassifier(nn.Module):
 
         # learnable positional embeddings
         self.max_len = 250
-        self.pos_embedding = nn.Embedding(self.max_len, input_dim)
 
         # learnable [CLS] token for 'cls' pooling
         self.pool = pool
@@ -59,14 +59,16 @@ class TransformerClassifier(nn.Module):
             nhead=nhead,
             dim_feedforward=dim_feedforward,
             dropout=dropout,
-            activation='relu'
+            activation='relu',
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
         # Classification heads
         self.emotion_head = EmotionHead(input_dim, num_emotions)
-        self.grl = GradientReversal()
-        self.gender_head = GenderHead(input_dim, num_genders)
+        self.predict_gender = predict_gender
+        if self.predict_gender:
+            self.grl = GradientReversal()
+            self.gender_head = GenderHead(input_dim, num_genders)
 
         # optional channel-wise LayerNorm over the hidden dimension
         self.speaker_wise_normalization = speaker_wise_normalization
@@ -101,16 +103,8 @@ class TransformerClassifier(nn.Module):
             # prepend [CLS] token
             batch_size = x.size(0)
             cls_tokens = self.cls_token.expand(batch_size, -1, -1)  # (batch,1,dim)
-            x = torch.cat([cls_tokens, x], dim=1)                   # (batch, seq_len+1, dim)
+            x = torch.cat([cls_tokens,x], dim=1)                   # (batch, seq_len+1, dim)
             self.max_len += 1  # adjust max_len for [CLS] token
-
-        # add learnable positional embeddings
-        seq_len = x.size(1)
-        if seq_len > self.max_len:
-            raise ValueError(f"Sequence length {seq_len} exceeds maximum {self.max_len}")
-        positions = torch.arange(seq_len, device=x.device).unsqueeze(0)  # (1, seq_len)
-        pe = self.pos_embedding(positions)  # (1, seq_len, input_dim)
-        x = x + pe
 
         # reshape for transformer: (seq_len(+1), batch, dim)
         x = x.permute(1, 0, 2)
@@ -129,8 +123,10 @@ class TransformerClassifier(nn.Module):
 
         # emotion prediction
         emo_logits = self.emotion_head(pooled)
+        gender_logits = None
         # adversarial gender prediction
-        grl_feat = self.grl(pooled, lambda_grl)
-        gender_logits = self.gender_head(grl_feat)
+        if self.predict_gender:
+            grl_feat = self.grl(pooled, lambda_grl)
+            gender_logits = self.gender_head(grl_feat)
 
         return emo_logits, gender_logits
