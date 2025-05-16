@@ -23,12 +23,30 @@ class RAVDESSDataset(Dataset):
     PyTorch Dataset for reclassified RAVDESS audio-only files,
     loading with librosa. Now returns (waveform, emotion, gender, actor_id).
     """
-    def __init__(self, root: str, split: str = None, sample_rate: int = 16000, transform=None):
+    def __init__(self, root: str, split: str = None,
+                 sample_rate: int = 16000, transform=None,
+                 num_folds: int = None, fold_idx: int = None):
         self.root = Path(root)
         self.sample_rate = sample_rate
         self.transform = transform
+        self.num_folds = num_folds
+        self.fold_idx = fold_idx
         # items: list of tuples (wav_path, emotion_idx, gender_idx, actor_id)
         self.items = []
+
+        # determine actor lists
+        all_actors = list(range(1, 21))  # actors 1 through 20
+        test_actors = list(range(21, 25))  # fixed test actors
+        if num_folds and fold_idx is not None:
+            # split the 20 actors into num_folds groups of equal size
+            fold_size = len(all_actors) // num_folds
+            val_start = (fold_idx - 1) * fold_size
+            val_actors = all_actors[val_start:val_start + fold_size]
+            train_actors = [a for a in all_actors if a not in val_actors]
+        else:
+            # original split-based actor filtering
+            val_actors = list(range(17, 21)) if split == 'val' else []
+            train_actors = list(range(1, 17)) if split == 'train' else []
 
         for gender_str, gender_idx in GENDER2IDX.items():
             gender_dir = self.root / gender_str
@@ -38,13 +56,22 @@ class RAVDESSDataset(Dataset):
                 if not actor_dir.is_dir():
                     continue
                 actor_id = int(actor_dir.name.split("_")[-1])
-                # split filtering
-                if split == 'train' and not (1 <= actor_id <= 16):
-                    continue
-                if split == 'val'   and not (17 <= actor_id <= 20):
-                    continue
-                if split == 'test'  and not (21 <= actor_id <= 24):
-                    continue
+                # actor-based filtering: either fold-based or original
+                if num_folds and fold_idx is not None:
+                    if split == 'train' and actor_id not in train_actors:
+                        continue
+                    if split == 'val' and actor_id not in val_actors:
+                        continue
+                    if split == 'test' and actor_id not in test_actors:
+                        continue
+                else:
+                    # original split-based
+                    if split == 'train' and actor_id not in train_actors:
+                        continue
+                    if split == 'val'   and actor_id not in val_actors:
+                        continue
+                    if split == 'test'  and actor_id not in test_actors:
+                        continue
                 # iterate emotions
                 for emo_dir in sorted(actor_dir.iterdir()):
                     emo_str = emo_dir.name

@@ -121,7 +121,8 @@ def main(args):
             num_genders=cfg['training'].get('num_genders', 2),
             dropout=tconf['dropout'],
             pool=tconf['pool'],
-            speaker_wise_normalization=cfg['model'].get('speaker_wise_normalization', False)
+            speaker_wise_normalization=cfg['model'].get('speaker_wise_normalization', False),
+            predict_gender=tconf.get('predict_gender', False)
         )
     else:
         conv_h = cfg['conv1d']['hidden_dim']
