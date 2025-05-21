@@ -212,6 +212,16 @@ def main(args):
         with open(results_txt, "a") as f:
             f.write(result + "\n")
 
+    # compute per-fold gender disparities
+    acc_diffs = [abs(m - f) for m, f in zip(fold_male_accs, fold_female_accs)]
+    uar_diffs = [abs(m - f) for m, f in zip(fold_male_recs, fold_female_recs)]
+    # print and log the lists
+    print(f"\nFold-wise ACC disparities (male vs female): {acc_diffs}")
+    print(f"Fold-wise UAR disparities (male vs female): {uar_diffs}")
+    with open(results_txt, "a") as f:
+        f.write(f"Fold-wise ACC disparities: {acc_diffs}\n")
+        f.write(f"Fold-wise UAR disparities: {uar_diffs}\n")
+
     # cross-fold summary
     # overall
     avg_acc    = statistics.mean(fold_accs)

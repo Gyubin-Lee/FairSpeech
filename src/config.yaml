@@ -4,10 +4,10 @@ data:
   root: data/RAVDESS_audio/processed
 
 model:
-  type: hubert                       # 'wav2vec2' or 'hubert'
-  pretrained: facebook/hubert-base-ls960 # 'facebook/wav2vec2-base-960h' or 'facebook/hubert-base-ls960'
+  type: wav2vec2                       # 'wav2vec2' or 'hubert'
+  pretrained: facebook/wav2vec2-base-960h # 'facebook/wav2vec2-base-960h' or 'facebook/hubert-base-ls960'
   trainable: false
-  classifier: transformer            # 'transformer' or 'conv1d'
+  classifier: transformer        # 'transformer' or 'conv1d'
   use_weighted_sum: true
   speaker_wise_normalization: true # approximate speaker-wise normalization by layer normalization
 
@@ -24,19 +24,19 @@ transformer:
   dim_feedforward: 128
   pool: max
   dropout: 0.2
-  lr: 1e-3                         # learning rate for transformer classifier
+  lr: 5e-4                         # learning rate for transformer classifier
   predict_gender: false
 
 training:
   batch_size: 32
   max_seq_len: 250
-  adv_weight: 1.0
-  lambda_grl: 2.0
-  epochs: 40
+  adv_weight: 0.25
+  lambda_grl: 1.0
+  epochs: 50
   num_workers: 4
   num_emotions: 7
   use_l2_loss: true
-  fairness_weight: 5.0
+  fairness_weight: 3.0
 
 # device and logging
 device: cuda

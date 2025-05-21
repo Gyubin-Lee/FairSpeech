@@ -52,7 +52,7 @@ def compute_metrics(y_true, y_pred, average='macro'):
     recall = recall_score(y_true, y_pred, average=average) if y_true else 0.0
     return acc, recall
 
-def train(cfg):
+def train(cfg, verbose: bool):
     # -- prepare output dir
     base_out = Path(cfg['output_dir'])
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -72,7 +72,8 @@ def train(cfg):
     # test_ds = RAVDESSDataset(root=..., split="test", ...)
 
     for fold_idx, val_actors in enumerate(val_actor_ranges, start=1):
-        print(f"\n=== Fold {fold_idx} validation actors: {val_actors} ===")
+        if verbose:
+            print(f"\n=== Fold {fold_idx} validation actors: {val_actors} ===")
         # create out_dir per fold
         fold_out = out_dir / f"fold_{fold_idx}"
         fold_out.mkdir(parents=True, exist_ok=True)
@@ -180,13 +181,15 @@ def train(cfg):
         fe_params = sum(p.numel() for p in fe.parameters() if p.requires_grad)
         clf_params = sum(p.numel() for p in clf.parameters() if p.requires_grad)
         total_params = fe_params + clf_params
-        print(f"Learnable parameters - FeatureExtractor: {fe_params:,}, Classifier: {clf_params:,}, Total: {total_params:,}")
+        if verbose:
+            print(f"Learnable parameters - FeatureExtractor: {fe_params:,}, Classifier: {clf_params:,}, Total: {total_params:,}")
         # Approximate model size in MB (assuming float32, 4 bytes per parameter)
         fe_size_mb = fe_params * 4 / (1024 ** 2)
         clf_size_mb = clf_params * 4 / (1024 ** 2)
         total_size_mb = total_params * 4 / (1024 ** 2)
-        print(f"Model size (MB) - FeatureExtractor: {fe_size_mb:.2f} MB, "
-              f"Classifier: {clf_size_mb:.2f} MB, Total: {total_size_mb:.2f} MB")
+        if verbose:
+            print(f"Model size (MB) - FeatureExtractor: {fe_size_mb:.2f} MB, "
+                  f"Classifier: {clf_size_mb:.2f} MB, Total: {total_size_mb:.2f} MB")
 
         # -- optimizer & scheduler
         # determine learning rate
@@ -215,8 +218,9 @@ def train(cfg):
             running_loss = 0.0
             train_trues, train_preds = [], []
 
-            print(f"\nEpoch {epoch}/{cfg['training']['epochs']}  LR: {scheduler.get_last_lr()[0]:.2e}")
-            pbar = tqdm(train_loader, desc="TRAIN")
+            if verbose:
+                print(f"\nEpoch {epoch}/{cfg['training']['epochs']}  LR: {scheduler.get_last_lr()[0]:.2e}")
+            pbar = tqdm(train_loader, desc="TRAIN", disable=not verbose)
             for wave, emos, gens, aids in pbar:
                 wave, emos, gens, aids = wave.to(device), emos.to(device), gens.to(device), aids.to(device)
                 optimizer.zero_grad()
@@ -247,13 +251,17 @@ def train(cfg):
                         adv_loss = (Lm - Lf) ** 2
                     else:
                         adv_loss = torch.tensor(0.0, device=device)
-                    loss = loss_emo + fairness_weight * adv_loss
-                elif gen_logits is not None:
-                    # original adversarial term
-                    loss_gen = criterion_gen(gen_logits, gens)
-                    loss = loss_emo + cfg['training']['adv_weight'] * loss_gen
+                    
+                    if gen_logits is not None:
+                        loss = loss_emo + fairness_weight * adv_loss + cfg['training']['adv_weight'] * criterion_gen(gen_logits, gens)
+                    else:
+                        loss = loss_emo + fairness_weight * adv_loss
                 else:
-                    loss = loss_emo
+                    if gen_logits is not None:
+                        # original adversarial term
+                        loss = loss_emo + cfg['training']['adv_weight'] * criterion_gen(gen_logits, gens)
+                    else:
+                        loss = loss_emo
 
                 loss.backward()
                 optimizer.step()
@@ -268,8 +276,9 @@ def train(cfg):
                 # inside the TRAIN loop, after updating running_loss, train_trues, train_preds:
                 avg_loss = running_loss / len(train_trues)
                 avg_acc  = sum(t == p for t, p in zip(train_trues, train_preds)) / len(train_trues)
-                pbar.set_postfix(train_loss=f"{avg_loss:.4f}", train_acc=f"{avg_acc:.4f}",
-                                 adv_loss=f"{adv_loss.item():.4f}" if use_l2_loss else "")
+                if verbose:
+                    pbar.set_postfix(train_loss=f"{avg_loss:.4f}", train_acc=f"{avg_acc:.4f}",
+                                    adv_loss=f"{adv_loss.item():.4f}" if use_l2_loss else "")
 
             train_loss = running_loss / len(train_trues)
             train_acc, train_recall = compute_metrics(train_trues, train_preds)
@@ -284,7 +293,7 @@ def train(cfg):
             val_trues, val_preds = [], []
             val_loss = 0.0
 
-            pbar = tqdm(val_loader, desc="VAL  ")
+            pbar = tqdm(val_loader, desc="VAL  ", disable=not verbose)
             with torch.no_grad():
                 for wave, emos, gens, aids in pbar:
                     wave, emos, gens, aids = wave.to(device), emos.to(device), gens.to(device), aids.to(device)
@@ -303,6 +312,20 @@ def train(cfg):
                         val_loss_g[grp]  += loss_i.item()
                         val_count_g[grp] += 1
                     val_loss += losses.sum().item()
+                    # add fairness penalty to val_loss if enabled
+                    if use_l2_loss:
+                        # compute per-sample CE again for fairness term
+                        per_sample = cross_entropy(emo_logits, emos, reduction='none')
+                        mask_m = gens == 0
+                        mask_f = gens == 1
+                        if mask_m.any() and mask_f.any():
+                            Lm = per_sample[mask_m].mean()
+                            Lf = per_sample[mask_f].mean()
+                            adv_loss = (Lm - Lf) ** 2
+                        else:
+                            adv_loss = torch.tensor(0.0, device=device)
+                        # scale by fairness weight and accumulate
+                        val_loss += fairness_weight * adv_loss.item()
 
                     preds = emo_logits.argmax(dim=1)
                     # collect overall
@@ -316,7 +339,8 @@ def train(cfg):
                     # inside the VAL loop:
                     avg_vloss = val_loss / len(val_trues)
                     avg_vacc  = sum(t == p for t, p in zip(val_trues, val_preds)) / len(val_trues)
-                    pbar.set_postfix(val_loss=f"{avg_vloss:.4f}", val_acc=f"{avg_vacc:.4f}")
+                    if verbose:
+                        pbar.set_postfix(val_loss=f"{avg_vloss:.4f}", val_acc=f"{avg_vacc:.4f}")
 
             val_loss = val_loss / len(val_trues)
             val_acc, val_recall = compute_metrics(val_trues, val_preds)
@@ -327,11 +351,12 @@ def train(cfg):
             male_acc, male_recall   = compute_metrics(val_trues_g[0], val_preds_g[0])
             female_acc, female_recall = compute_metrics(val_trues_g[1], val_preds_g[1])
 
-            print(f"\nEpoch {epoch} summary:")
-            print(f"  Train loss: {train_loss:.4f}, Acc: {train_acc:.4f}, Recall: {train_recall:.4f}")
-            print(f"  Val   loss: {val_loss:.4f}, Acc: {val_acc:.4f}, Recall: {val_recall:.4f}")
-            print(f"    Male   loss: {male_loss:.4f}, Acc: {male_acc:.4f}, Recall: {male_recall:.4f}")
-            print(f"    Female loss: {female_loss:.4f}, Acc: {female_acc:.4f}, Recall: {female_recall:.4f}")
+            if verbose:
+                print(f"\nEpoch {epoch} summary:")
+                print(f"  Train loss: {train_loss:.4f}, Acc: {train_acc:.4f}, Recall: {train_recall:.4f}")
+                print(f"  Val   loss: {val_loss:.4f}, Acc: {val_acc:.4f}, Recall: {val_recall:.4f}")
+                print(f"    Male   loss: {male_loss:.4f}, Acc: {male_acc:.4f}, Recall: {male_recall:.4f}")
+                print(f"    Female loss: {female_loss:.4f}, Acc: {female_acc:.4f}, Recall: {female_recall:.4f}")
 
             # log
             with open(mpath, "a") as mf:
@@ -352,18 +377,21 @@ def train(cfg):
             else:
                 no_improve_count += 1
                 if no_improve_count >= patience:
-                    print(f"No improvement in val_recall for {patience} epochs, stopping early.")
+                    if verbose:
+                        print(f"No improvement in val_recall for {patience} epochs, stopping early.")
                     break
 
             scheduler.step()
 
 
-        print(f"\nTraining complete. Best Val loss: {best_val_loss:.4f}")
+        if verbose:
+            print(f"\nTraining complete. Best Val loss: {best_val_loss:.4f}")
 
 if __name__ == "__main__":
     p = argparse.ArgumentParser()
     p.add_argument("--config", type=str, required=True, help="config.yaml path")
+    p.add_argument("--verbose", action="store_true", help="enable console logging")
     args = p.parse_args()
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
-    train(cfg)
+    train(cfg, args.verbose)
