@@ -7,7 +7,7 @@ model:
   type: wav2vec2                       # 'wav2vec2' or 'hubert'
   pretrained: facebook/wav2vec2-base-960h # 'facebook/wav2vec2-base-960h' or 'facebook/hubert-base-ls960'
   trainable: false
-  classifier: conv1d        # 'transformer' or 'conv1d'
+  classifier: transformer        # 'transformer' or 'conv1d'
   use_weighted_sum: true
   speaker_wise_normalization: true # approximate speaker-wise normalization by layer normalization
 
@@ -30,12 +30,12 @@ transformer:
 training:
   batch_size: 32
   max_seq_len: 250
-  adv_weight: 0.25
-  lambda_grl: 1.0
+  adv_weight: 0.0
+  lambda_grl: 0.0
   epochs: 50
   num_workers: 4
   num_emotions: 7
-  use_l2_loss: false
+  use_l2_loss: true
   fairness_weight: 3.0
 
 # device and logging

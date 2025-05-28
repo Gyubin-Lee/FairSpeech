@@ -45,8 +45,7 @@ class RAVDESSDataset(Dataset):
             train_actors = [a for a in all_actors if a not in val_actors]
         else:
             # original split-based actor filtering
-            val_actors = list(range(17, 21)) if split == 'val' else []
-            train_actors = list(range(1, 17)) if split == 'train' else []
+            train_actors = list(range(1, 21)) if split == 'train' else []
 
         for gender_str, gender_idx in GENDER2IDX.items():
             gender_dir = self.root / gender_str
