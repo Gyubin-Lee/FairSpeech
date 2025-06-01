@@ -352,7 +352,7 @@ def train(cfg, verbose: bool):
             best_val_loss = val_loss
             no_improve_count = 0
             # save both feature extractor and classifier
-            torch.save(fe.state_dict(), out_dir/"best_fe.pt")
+            # torch.save(fe.state_dict(), out_dir/"best_fe.pt")
             torch.save(clf.state_dict(), out_dir/"best_clf.pt")
         else:
             no_improve_count += 1

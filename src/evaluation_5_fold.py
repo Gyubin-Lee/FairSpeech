@@ -157,7 +157,7 @@ def main(args):
         print(param_info)
 
         # load checkpoints for this fold
-        fe.load_state_dict(torch.load(fold_dir/"best_fe.pt", map_location=device))
+        # fe.load_state_dict(torch.load(fold_dir/"best_fe.pt", map_location=device))
         clf.load_state_dict(torch.load(fold_dir/"best_clf.pt", map_location=device))
 
         all_true, all_pred, all_genders = [], [], []

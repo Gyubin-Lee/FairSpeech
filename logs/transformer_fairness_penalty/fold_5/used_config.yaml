@@ -1,0 +1,35 @@
+conv1d:
+  dropout: 0.2
+  hidden_dim: 128
+  lr: 1e-3
+data:
+  root: data/RAVDESS_audio/processed
+device: cuda
+model:
+  classifier: transformer
+  pretrained: facebook/wav2vec2-base-960h
+  speaker_wise_normalization: true
+  trainable: false
+  type: wav2vec2
+  use_weighted_sum: true
+output_dir: logs
+training:
+  adv_weight: 0.0
+  batch_size: 32
+  epochs: 50
+  fairness_weight: 3.0
+  lambda_grl: 0.0
+  max_seq_len: 250
+  num_emotions: 7
+  num_workers: 4
+  use_l2_loss: true
+transformer:
+  dim_feedforward: 128
+  dropout: 0.2
+  feature_dim: 768
+  input_dim: 128
+  lr: 5e-4
+  nhead: 1
+  num_layers: 1
+  pool: max
+  predict_gender: false

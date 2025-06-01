@@ -150,9 +150,9 @@ def main(args):
     print(param_info)
 
     # Load the best saved models (feature extractor and classifier)
-    fe_ckpt  = out_dir / "best_fe.pt"
+    # fe_ckpt  = out_dir / "best_fe.pt"
     clf_ckpt = out_dir / "best_clf.pt"
-    fe.load_state_dict(torch.load(fe_ckpt, map_location=device))
+    # fe.load_state_dict(torch.load(fe_ckpt, map_location=device))
     clf.load_state_dict(torch.load(clf_ckpt, map_location=device))
 
     # evaluate
